@@ -1,13 +1,27 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# Repository: https://github.com/h-otter/zabbix-slackpy
+# Forked from: https://github.com/h-otter/zabbix-slackpy
+# Repository: https://github.com/Red-Hat-Information-Security/zabbix-slackpy
 
+import configparser
+import requests
 from json import loads
-from json import dumps
 from sys import argv
 
+request_timeout = 1800
 
-def send_trigger(message, slack_hook):
+
+def get_triager(file: str) -> str:
+    """
+    Return current triager Slack ID
+    """
+    config = configparser.ConfigParser()
+    config.read(file)
+
+    return config['triage']['notify']
+
+
+def send_trigger(notify, message, slack_hook):
     """
     On zabbix, set actions to architect message like this
     {
@@ -21,7 +35,7 @@ def send_trigger(message, slack_hook):
         "item_value": "{ITEM.VALUE}"
     }
     """
-    title = "%s: %s" % (message["status"], message["name"])
+    title = f"{message['status']}: {message['name']}"
 
     if message["status"] == "PROBLEM":
         if message["triage"] == "Disaster":
@@ -36,55 +50,70 @@ def send_trigger(message, slack_hook):
             color = "#7499ff"
         else:
             color = "#97aab3"
+
+        payload = {
+            "attachments": [
+                {
+                    "fallback": f"{message['date']} - {title}.",
+                    "color": color,
+                    "author_name": "Zabbix",
+                    "author_icon": "https://assets.zabbix.com/img/favicon.ico",
+                    "title": title,
+                    "title_link": message["url"],
+                    "fields": [
+                        {
+                            "title": "Host",
+                            "value": message["host"],
+                            "short": False
+                        },
+                        {
+                            "title": "Data",
+                            "value": message["date"],
+                            "short": False
+                        },
+                        {
+                            "title": "Detail",
+                            "value": f"{message['item_name']}: {message['item_value']}.",
+                            "short": False
+                        },
+                        {
+                            "title": "Triager",
+                            "value": f'<{notify}>',
+                            "short": False
+                        },
+                    ],
+                }
+            ]
+        }
+
     elif message["status"] == 'OK':
-        if message["triage"] in {"Disaster", "High", "Average", "Warning"}:
+        if message["triage"] in ["Disaster", "High", "Average", "Warning"]:
             color = "good"
         else:
             return
+
+        payload = {
+            "attachments": [
+                {
+                    "fallback": f"{message['date']} - {title}.",
+                    "color": color,
+                    "author_name": "Zabbix",
+                    "author_icon": "https://assets.zabbix.com/img/favicon.ico",
+                    "title": title,
+                    "title_link": message["url"],
+                    "text": f"Host: {message['host']}",
+                }
+            ]
+        }
+
     else:
-        raise Exception("Input other status")
+        raise Exception(f"Unsupported alert status: {message['status']}.")
 
-    payload = {
-        "attachments": [
-            {
-                "fallback": "%s - %s." % (message["date"], title),
-                "color": color,
-                "author_name": message["triage"],
-                "title": title,
-                "title_link": message["url"],
-                "fields": [
-                    {
-                        "title": "Data",
-                        "value": message["date"],
-                        "short": True
-                    },
-                    {
-                        "title": "Host",
-                        "value": message["host"],
-                        "short": True
-                    },
-                    {
-                        "title": "Detail",
-                        "value": "%s: %s" % (message["item_name"], message["item_value"]),
-                        "short": True
-                    },
-                ],
-            }
-        ]
-    }
-
-    value = dumps(payload).encode("utf-8")
     headers = {'Content-type':'application/json'}
 
-    try:
-        import urllib2 as urllib_req
-    except ImportError:
-        import urllib.request as urllib_req
-
-    req = urllib_req.Request(slack_hook,
-                             data=value,
-                             headers=headers)
-    return urllib_req.urlopen(req).read()
+    response = requests.post(
+        slack_hook, headers=headers, json=payload, timeout=request_timeout
+    )
 
 
 if __name__ == "__main__":
@@ -99,5 +128,6 @@ if __name__ == "__main__":
         print("\nToo few arguments -- requires: (slack_hook message). Example console run:\n")
         print("""python slack.py https://hooks.slack.com/services/SLACKHOSTID '{ "date": "2020-01-01 / 00:00:01", "host": "times.square", "name": "NewYears", "url": "https://www.timeanddate.com/countdown/newyear", "status": "PROBLEM", "triage": "Warning", "item_name": "Countdown Clock", "item_value": "Almost there" }' """ + "\n")
     else:
+        triager = get_triager('/usr/lib/zabbix/alertscripts/triage.ini')
         loaded = loads(argvs[2])
-        send_trigger(loaded, argvs[1])
+        send_trigger(triager, loaded, argvs[1])
